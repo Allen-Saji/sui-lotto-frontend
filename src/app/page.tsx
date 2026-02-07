@@ -1,8 +1,5 @@
 import { Header } from "@/components/Header";
 import { HeroSection } from "@/components/HeroSection";
-import { PrizePool } from "@/components/PrizePool";
-import { CountdownTimer } from "@/components/CountdownTimer";
-import { BuyTicket } from "@/components/BuyTicket";
 import { WinnerTiers } from "@/components/WinnerTiers";
 import { HowItWorks } from "@/components/HowItWorks";
 import { RecentWinners } from "@/components/RecentWinners";
@@ -24,16 +21,6 @@ export default function Home() {
       <FloatingBalls />
       <Header />
       <HeroSection />
-      <PrizePool />
-
-      {/* Countdown + Buy side-by-side */}
-      <section id="buy" className="relative z-10 max-w-5xl mx-auto px-6 py-8">
-        <div className="grid md:grid-cols-2 gap-8">
-          <CountdownTimer />
-          <BuyTicket />
-        </div>
-      </section>
-
       <WinnerTiers />
       <HowItWorks />
       <RecentWinners />
