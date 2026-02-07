@@ -2,16 +2,17 @@
 
 import { useState } from "react";
 import { useCurrentAccount, useSuiClientQuery } from "@mysten/dapp-kit";
+import { useQueryClient } from "@tanstack/react-query";
 import { useLotteryActions } from "@/hooks/useLotteryActions";
-import { useLotteryContext } from "@/lib/lottery-context";
-import { PACKAGE_ID, ADMIN_CAP_ID, mistToSui, suiToMist, truncateAddress, getExpectedWinnerCount } from "@/lib/constants";
+import { useAdminLotteries, type LotteryWithId } from "@/hooks/useActiveLotteries";
+import { useCountdown } from "@/hooks/useCountdown";
+import { PACKAGE_ID, mistToSui, suiToMist, truncateAddress, getExpectedWinnerCount } from "@/lib/constants";
 import { WalletButton } from "@/components/WalletButton";
 import Link from "next/link";
 
 export default function AdminPage() {
   const account = useCurrentAccount();
 
-  // Check if connected wallet owns the AdminCap
   const { data: ownedObjects } = useSuiClientQuery(
     "getOwnedObjects",
     {
@@ -50,7 +51,7 @@ export default function AdminPage() {
         <WalletButton />
       </header>
 
-      <div className="relative z-10 max-w-3xl mx-auto px-6 py-12">
+      <div className="relative z-10 max-w-5xl mx-auto px-6 py-12">
         {!account ? (
           <div className="glass-card p-12 text-center">
             <span className="text-5xl block mb-4">🔐</span>
@@ -73,9 +74,9 @@ export default function AdminPage() {
 }
 
 function AdminPanel() {
-  const { lotteryId, setLotteryId, lottery, isLoading, refetch } = useLotteryContext();
-  const { createLottery, drawWinner, isPending } = useLotteryActions();
+  const { createLottery, isPending } = useLotteryActions();
   const [status, setStatus] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const queryClient = useQueryClient();
 
   return (
     <div className="space-y-8">
@@ -96,31 +97,19 @@ function AdminPanel() {
       {/* Create Lottery */}
       <CreateLotteryForm
         onCreated={(id) => {
-          setLotteryId(id);
+          queryClient.invalidateQueries({ queryKey: ["admin-lotteries"] });
           setStatus({ type: "success", message: `Lottery created: ${truncateAddress(id)}` });
         }}
         onError={(msg) => setStatus({ type: "error", message: msg })}
         createLottery={createLottery}
         isPending={isPending}
-        hasActiveLottery={!!lottery && lottery.status === 0}
       />
 
-      {/* Active Lottery */}
-      {lotteryId && (
-        <ActiveLottery
-          lotteryId={lotteryId}
-          lottery={lottery}
-          isLoading={isLoading}
-          refetch={refetch}
-          drawWinner={drawWinner}
-          isPending={isPending}
-          onSuccess={(msg) => setStatus({ type: "success", message: msg })}
-          onError={(msg) => setStatus({ type: "error", message: msg })}
-        />
-      )}
-
-      {/* Manual Lottery ID */}
-      <ManualLotteryId lotteryId={lotteryId} setLotteryId={setLotteryId} />
+      {/* All undrawn lotteries */}
+      <AdminLotteryGrid
+        onSuccess={(msg) => setStatus({ type: "success", message: msg })}
+        onError={(msg) => setStatus({ type: "error", message: msg })}
+      />
     </div>
   );
 }
@@ -132,13 +121,11 @@ function CreateLotteryForm({
   onError,
   createLottery,
   isPending,
-  hasActiveLottery,
 }: {
   onCreated: (id: string) => void;
   onError: (msg: string) => void;
   createLottery: (price: bigint, deadline: bigint) => Promise<{ digest: string; lotteryId: string | null }>;
   isPending: boolean;
-  hasActiveLottery: boolean;
 }) {
   const [price, setPrice] = useState("0.5");
   const [hours, setHours] = useState("24");
@@ -152,7 +139,7 @@ function CreateLotteryForm({
       if (result.lotteryId) {
         onCreated(result.lotteryId);
       } else {
-        onError(`Lottery created (tx: ${result.digest.slice(0, 12)}...) but could not find object ID. Check the explorer and set it manually.`);
+        onError(`Lottery created (tx: ${result.digest.slice(0, 12)}...) but could not find object ID.`);
       }
     } catch (err) {
       onError(err instanceof Error ? err.message : "Failed to create lottery");
@@ -164,14 +151,6 @@ function CreateLotteryForm({
       <h2 className="text-xl font-bold mb-6 flex items-center gap-2">
         <span className="text-2xl">🎲</span> Create New Lottery
       </h2>
-
-      {hasActiveLottery && (
-        <div className="mb-4 rounded-lg px-4 py-2 text-xs font-mono"
-          style={{ background: "rgba(255,184,0,0.08)", border: "1px solid rgba(255,184,0,0.2)", color: "#FFB800" }}
-        >
-          A lottery is currently active. Creating a new one will be a separate round.
-        </div>
-      )}
 
       <div className="grid grid-cols-2 gap-4 mb-6">
         <div>
@@ -218,175 +197,186 @@ function CreateLotteryForm({
   );
 }
 
-/* ───── Active Lottery Panel ───── */
+/* ───── Admin Lottery Grid ───── */
 
-function ActiveLottery({
-  lotteryId,
-  lottery,
-  isLoading,
-  refetch,
-  drawWinner,
-  isPending,
+function AdminLotteryGrid({
   onSuccess,
   onError,
 }: {
-  lotteryId: string;
-  lottery: import("@/lib/constants").LotteryState | null;
-  isLoading: boolean;
-  refetch: () => void;
-  drawWinner: (id: string) => Promise<{ digest: string }>;
-  isPending: boolean;
   onSuccess: (msg: string) => void;
   onError: (msg: string) => void;
 }) {
-  const deadlinePassed = lottery ? Date.now() > Number(lottery.deadline) : false;
-  const isActive = lottery?.status === 0;
-  const isCompleted = lottery?.status === 1;
+  const { data: lotteries, isLoading } = useAdminLotteries();
 
-  async function handleDraw() {
-    try {
-      const result = await drawWinner(lotteryId);
-      onSuccess(`Draw complete! Tx: ${result.digest.slice(0, 12)}...`);
-      refetch();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Draw failed");
-    }
-  }
+  // Sort: drawable-first (expired + ≥2 participants), then by deadline asc
+  const sorted = lotteries?.slice().sort((a, b) => {
+    const now = Date.now();
+    const aDrawable = Number(a.deadline) <= now && a.participants.length >= 2;
+    const bDrawable = Number(b.deadline) <= now && b.participants.length >= 2;
+    if (aDrawable !== bDrawable) return aDrawable ? -1 : 1;
+    return Number(a.deadline) - Number(b.deadline);
+  });
 
   return (
-    <div className="glass-card p-8">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-xl font-bold flex items-center gap-2">
-          <span className="text-2xl">📊</span> Lottery Status
-        </h2>
-        <button
-          onClick={() => refetch()}
-          className="text-xs font-mono text-[#4DA2FF] hover:text-[#6BB5FF] transition-colors"
-        >
-          Refresh
-        </button>
-      </div>
-
-      {/* Lottery ID */}
-      <div className="mb-4 px-4 py-2 rounded-lg bg-white/5 font-mono text-xs text-white/50 break-all">
-        ID: {lotteryId}
-      </div>
+    <div>
+      <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+        <span className="text-2xl">📊</span> All Lotteries
+        {sorted && sorted.length > 0 && (
+          <span className="text-sm font-mono text-white/30 font-normal">({sorted.length})</span>
+        )}
+      </h2>
 
       {isLoading ? (
-        <div className="text-center py-8 text-white/30 font-mono text-sm">Loading lottery data...</div>
-      ) : !lottery ? (
-        <div className="text-center py-8 text-white/30 font-mono text-sm">Lottery not found. Check the ID.</div>
-      ) : (
-        <>
-          {/* Status badge */}
-          <div className="flex items-center gap-3 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {[0, 1].map((i) => (
             <div
-              className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold"
+              key={i}
+              className="glass-card p-6 h-52 animate-shimmer"
               style={{
-                background: isActive ? "rgba(57,255,20,0.08)" : "rgba(77,162,255,0.08)",
-                border: `1px solid ${isActive ? "rgba(57,255,20,0.3)" : "rgba(77,162,255,0.3)"}`,
-                color: isActive ? "#39FF14" : "#4DA2FF",
+                background: "linear-gradient(90deg, rgba(77,162,255,0.03), rgba(77,162,255,0.08), rgba(77,162,255,0.03))",
+                backgroundSize: "200% 100%",
               }}
-            >
-              <span className={`w-2 h-2 rounded-full ${isActive ? "bg-[#39FF14] animate-pulse" : "bg-[#4DA2FF]"}`} />
-              {isActive ? "Active" : "Completed"}
-            </div>
-            {deadlinePassed && isActive && (
-              <span className="text-xs font-mono text-[#FFB800]">Deadline passed</span>
-            )}
-          </div>
-
-          {/* Stats grid */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-            <StatCard label="Pool" value={`${mistToSui(lottery.balance).toFixed(2)} SUI`} />
-            <StatCard label="Tickets" value={lottery.participants.length.toString()} />
-            <StatCard label="Price" value={`${mistToSui(lottery.ticketPrice)} SUI`} />
-            <StatCard label="Winners" value={
-              isCompleted
-                ? lottery.winners.length.toString()
-                : getExpectedWinnerCount(lottery.participants.length).toString()
-            } />
-          </div>
-
-          {/* Deadline */}
-          <div className="mb-6 text-xs font-mono text-white/40">
-            Deadline: {new Date(Number(lottery.deadline)).toLocaleString()}
-          </div>
-
-          {/* Winners list (if completed) */}
-          {isCompleted && lottery.winners.length > 0 && (
-            <div className="mb-6">
-              <p className="text-xs font-mono text-white/40 uppercase tracking-wider mb-2">Winners</p>
-              <div className="space-y-1">
-                {lottery.winners.map((w, i) => (
-                  <div key={i} className="px-3 py-2 rounded-lg bg-white/5 font-mono text-xs text-white/60">
-                    {i + 1}. {truncateAddress(w)}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Draw button */}
-          {isActive && (
-            <button
-              onClick={handleDraw}
-              disabled={isPending || !deadlinePassed || lottery.participants.length < 2}
-              className="buy-button w-full text-center disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isPending
-                ? "Drawing..."
-                : !deadlinePassed
-                  ? "Waiting for deadline..."
-                  : lottery.participants.length < 2
-                    ? "Need 2+ participants"
-                    : "Draw Winners"}
-            </button>
-          )}
-        </>
+            />
+          ))}
+        </div>
+      ) : !sorted || sorted.length === 0 ? (
+        <div className="glass-card p-8 text-center">
+          <p className="text-white/30 font-mono text-sm">No undrawn lotteries found.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {sorted.map((lottery) => (
+            <AdminLotteryCard
+              key={lottery.id}
+              lottery={lottery}
+              onSuccess={onSuccess}
+              onError={onError}
+            />
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-/* ───── Manual Lottery ID Input ───── */
+/* ───── Admin Lottery Card ───── */
 
-function ManualLotteryId({
-  lotteryId,
-  setLotteryId,
+function AdminLotteryCard({
+  lottery,
+  onSuccess,
+  onError,
 }: {
-  lotteryId: string | null;
-  setLotteryId: (id: string) => void;
+  lottery: LotteryWithId;
+  onSuccess: (msg: string) => void;
+  onError: (msg: string) => void;
 }) {
-  const [input, setInput] = useState(lotteryId ?? "");
+  const { drawWinner, isPending } = useLotteryActions();
+  const queryClient = useQueryClient();
+  const [drawing, setDrawing] = useState(false);
+
+  const now = Date.now();
+  const deadlinePassed = Number(lottery.deadline) <= now;
+  const canDraw = deadlinePassed && lottery.participants.length >= 2;
+
+  const pool = mistToSui(lottery.balance);
+  const price = mistToSui(lottery.ticketPrice);
+  const tickets = lottery.participants.length;
+  const expectedWinners = getExpectedWinnerCount(tickets);
+
+  async function handleDraw() {
+    setDrawing(true);
+    try {
+      const result = await drawWinner(lottery.id);
+      queryClient.invalidateQueries({ queryKey: ["admin-lotteries"] });
+      onSuccess(`Draw complete for ${truncateAddress(lottery.id)}! Tx: ${result.digest.slice(0, 12)}...`);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Draw failed");
+    } finally {
+      setDrawing(false);
+    }
+  }
 
   return (
-    <div className="glass-card p-6">
-      <h3 className="text-sm font-bold mb-3 flex items-center gap-2">
-        <span>🔗</span> Set Lottery ID Manually
-      </h3>
-      <p className="text-xs text-white/30 mb-3">
-        Paste the Lottery object ID from the explorer after creating a round.
-      </p>
-      <div className="flex gap-2">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="0x..."
-          className="flex-1 px-4 py-2.5 rounded-xl font-mono text-sm bg-white/5 border border-white/10 focus:border-[#4DA2FF]/50 focus:outline-none transition-colors"
-        />
-        <button
-          onClick={() => input.startsWith("0x") && setLotteryId(input)}
-          className="px-5 py-2.5 rounded-xl text-sm font-semibold transition-all hover:scale-105"
-          style={{
-            background: "linear-gradient(135deg, rgba(77,162,255,0.15), rgba(123,47,190,0.15))",
-            border: "1px solid rgba(77,162,255,0.3)",
-          }}
-        >
-          Set
-        </button>
+    <div
+      className="glass-card p-5 flex flex-col gap-4"
+      style={canDraw ? {
+        border: "1px solid rgba(255,184,0,0.3)",
+        boxShadow: "0 0 20px rgba(255,184,0,0.06)",
+      } : undefined}
+    >
+      {/* Top row: ID + status */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-xs text-white/40 truncate flex-1">
+          {truncateAddress(lottery.id)}
+        </span>
+        {deadlinePassed ? (
+          <span
+            className="px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider"
+            style={{
+              background: "rgba(255,184,0,0.1)",
+              border: "1px solid rgba(255,184,0,0.3)",
+              color: "#FFB800",
+            }}
+          >
+            Expired
+          </span>
+        ) : (
+          <MiniCountdown deadline={Number(lottery.deadline)} />
+        )}
       </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-4 gap-2">
+        <StatCard label="Pool" value={`${pool.toFixed(2)} SUI`} />
+        <StatCard label="Tickets" value={tickets.toString()} />
+        <StatCard label="Price" value={`${price} SUI`} />
+        <StatCard label="Winners" value={expectedWinners.toString()} />
+      </div>
+
+      {/* Draw button */}
+      <button
+        onClick={handleDraw}
+        disabled={!canDraw || isPending || drawing}
+        className="w-full py-3 rounded-xl font-semibold text-sm transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:scale-100"
+        style={{
+          background: canDraw
+            ? "linear-gradient(135deg, #FFB800, #FF8C00)"
+            : "linear-gradient(135deg, rgba(77,162,255,0.15), rgba(123,47,190,0.15))",
+          boxShadow: canDraw ? "0 4px 20px rgba(255,184,0,0.2)" : "none",
+        }}
+      >
+        {drawing
+          ? "Drawing..."
+          : !deadlinePassed
+            ? "Waiting for deadline..."
+            : tickets < 2
+              ? "Need 2+ participants"
+              : "Draw Winners"}
+      </button>
+    </div>
+  );
+}
+
+/* ───── Mini Countdown ───── */
+
+function MiniCountdown({ deadline }: { deadline: number }) {
+  const { d, h, m, s } = useCountdown(deadline);
+
+  return (
+    <div className="flex items-center gap-1">
+      {[
+        { v: d, l: "d" },
+        { v: h, l: "h" },
+        { v: m, l: "m" },
+        { v: s, l: "s" },
+      ].map(({ v, l }) => (
+        <div key={l} className="flex items-center gap-0.5">
+          <span className="font-mono font-bold text-xs tabular-nums text-[#4DA2FF]">
+            {String(v).padStart(2, "0")}
+          </span>
+          <span className="text-[9px] text-white/30 font-mono">{l}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -395,9 +385,9 @@ function ManualLotteryId({
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="px-4 py-3 rounded-xl bg-white/5 border border-white/8">
-      <p className="text-[10px] font-mono text-white/40 uppercase tracking-wider">{label}</p>
-      <p className="text-lg font-bold font-mono mt-1">{value}</p>
+    <div className="px-3 py-2 rounded-xl bg-white/5 border border-white/8">
+      <p className="text-[9px] font-mono text-white/40 uppercase tracking-wider">{label}</p>
+      <p className="text-sm font-bold font-mono mt-0.5">{value}</p>
     </div>
   );
 }
