@@ -2,7 +2,7 @@
 
 A decentralized multi-winner lottery on the Sui blockchain. Players buy tickets with SUI, and when the deadline hits, on-chain randomness picks the winners. 98% of the pool goes to winners, 2% to the protocol.
 
-![SuiLotto Dashboard](public/sui_lotto_dasboard.png)
+![SuiLotto Dashboard](/sui_lotto_dasboard.png)
 
 ## Lottery Rules
 
@@ -20,20 +20,20 @@ A decentralized multi-winner lottery on the Sui blockchain. Players buy tickets 
 The number of winners scales with participation:
 
 | Tickets Sold | Winners | Share Each |
-|---|---|---|
-| 2–5 | 1 | 100% |
-| 6–9 | 2 | 50% |
-| 10–99 | 3 | ~33.3% |
-| 100+ | 5 | 20% |
+| ------------ | ------- | ---------- |
+| 2–5          | 1       | 100%       |
+| 6–9          | 2       | 50%        |
+| 10–99        | 3       | ~33.3%     |
+| 100+         | 5       | 20%        |
 
 The same address **can** win multiple times if they hold multiple tickets.
 
 ### Prize Split
 
 | Recipient | Share |
-|---|---|
-| Winners | 98% |
-| Protocol | 2% |
+| --------- | ----- |
+| Winners   | 98%   |
+| Protocol  | 2%    |
 
 ### Randomness
 
